@@ -3,20 +3,40 @@ use crate::error::Result;
 use crate::eval::{EvalDataset, EvalRunner};
 use crate::llm::LlmClient;
 use crate::llm::client::ChatMessage;
-use crate::optimizer::{OptimizationLogEntry, OptimizationResult, ScoredCandidate};
+use crate::optimizer::{
+    average_score, strip_code_fences, OptimizableField, OptimizationLogEntry,
+    OptimizationResult, ScoredCandidate,
+};
 
 pub struct InstructionOptimizer {
     pub client: LlmClient,
     pub num_candidates: usize,
+    pub target_fields: Vec<OptimizableField>,
 }
 
 impl InstructionOptimizer {
     pub fn new(client: LlmClient) -> Self {
-        Self { client, num_candidates: 3 }
+        Self {
+            client,
+            num_candidates: 3,
+            target_fields: vec![OptimizableField::AgentSystemPrompt],
+        }
     }
 
     pub fn with_num_candidates(mut self, n: usize) -> Self {
         self.num_candidates = n;
+        self
+    }
+
+    /// Set specific fields to optimize. If not called, defaults to `agent.system_prompt` only.
+    pub fn with_target_fields(mut self, fields: Vec<OptimizableField>) -> Self {
+        self.target_fields = fields;
+        self
+    }
+
+    /// Automatically target all optimizable fields found in the config.
+    pub fn with_all_fields(mut self, config: &AuraConfig) -> Self {
+        self.target_fields = OptimizableField::all_fields(config);
         self
     }
 
@@ -64,98 +84,183 @@ impl InstructionOptimizer {
             .collect::<Vec<_>>()
             .join("\n---\n");
 
-        let prompt = format!(
-            "You are a prompt engineer. Analyze these agent failures and propose {} improved system prompts.\n\n\
-             Current system prompt:\n{}\n\n\
-             Failed scenarios:\n{}\n\n\
-             Return a JSON array of {} improved system prompts. Format:\n\
-             [\"improved prompt 1\", \"improved prompt 2\", ...]",
-            self.num_candidates,
-            config.agent.system_prompt,
-            failure_summary,
-            self.num_candidates,
-        );
-
-        let messages = vec![
-            ChatMessage::system("You are an expert prompt engineer. Return only valid JSON arrays."),
-            ChatMessage::user(prompt),
-        ];
-
-        let response = self.client.chat(&messages).await?;
-        let candidates = parse_candidate_prompts(&response)?;
-
-        // Score each candidate
-        let mut scored = vec![ScoredCandidate {
+        // Optimize each target field
+        let mut best_config = config.clone();
+        let mut best_score = baseline_score;
+        let mut all_scored = vec![ScoredCandidate {
             config: config.clone(),
             score: baseline_score,
             results: baseline_results.clone(),
             notes: vec!["Baseline".into()],
         }];
-
         let mut log_entries = Vec::new();
 
-        for candidate_prompt in &candidates {
-            let mut candidate_config = config.clone();
-            candidate_config.agent.system_prompt = candidate_prompt.clone();
+        for field in &self.target_fields {
+            let current_value = match field.get_value(&best_config) {
+                Some(v) => v.to_string(),
+                None => continue,
+            };
 
-            let mut results = Vec::new();
-            for scenario in &dataset.scenarios {
-                let result = runner.run_scenario(&candidate_config, scenario).await?;
-                results.push(result);
-            }
-            let score = average_score(&results);
+            let prompt = build_optimization_prompt(
+                field,
+                &current_value,
+                &failure_summary,
+                self.num_candidates,
+            );
 
-            scored.push(ScoredCandidate {
-                config: candidate_config,
-                score,
-                results,
-                notes: vec!["InstructionOptimizer candidate".into()],
-            });
-        }
-
-        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-        let best = scored.first().unwrap().clone();
-
-        if best.score > baseline_score {
-            log_entries.push(OptimizationLogEntry {
-                optimizer: "InstructionOptimizer".into(),
-                field: "agent.system_prompt".into(),
-                before: config.agent.system_prompt.clone(),
-                after: best.config.agent.system_prompt.clone(),
-                score_before: baseline_score,
-                score_after: best.score,
-                rationale: format!(
-                    "LLM proposed {} candidate prompts; best improved score from {:.2} to {:.2}.",
-                    candidates.len(), baseline_score, best.score
+            let messages = vec![
+                ChatMessage::system(
+                    "You are an expert prompt engineer. Return only valid JSON arrays. \
+                     When optimizing template prompts, preserve all template variables \
+                     (%%VAR%% and {{var}} placeholders) exactly as they appear.",
                 ),
-                alternatives: scored.iter().skip(1)
-                    .map(|c| (c.config.agent.system_prompt.clone(), c.score))
-                    .collect(),
-            });
+                ChatMessage::user(prompt),
+            ];
+
+            let response = self.client.chat(&messages).await?;
+            let candidates = parse_candidate_prompts(&response)?;
+
+            for candidate_prompt in &candidates {
+                // Validate template variables are preserved
+                if field.is_template() && !templates_preserved(&current_value, candidate_prompt) {
+                    continue; // Skip candidates that drop template variables
+                }
+
+                let mut candidate_config = best_config.clone();
+                field.set_value(&mut candidate_config, candidate_prompt.clone());
+
+                let mut results = Vec::new();
+                for scenario in &dataset.scenarios {
+                    let result = runner.run_scenario(&candidate_config, scenario).await?;
+                    results.push(result);
+                }
+                let score = average_score(&results);
+
+                all_scored.push(ScoredCandidate {
+                    config: candidate_config,
+                    score,
+                    results,
+                    notes: vec![format!(
+                        "InstructionOptimizer candidate for {}",
+                        field.field_path()
+                    )],
+                });
+            }
+
+            // Find best candidate for this field
+            all_scored.sort_by(|a, b| b.score.total_cmp(&a.score));
+            let field_best = &all_scored[0];
+
+            if field_best.score > best_score {
+                log_entries.push(OptimizationLogEntry {
+                    optimizer: "InstructionOptimizer".into(),
+                    field: field.field_path(),
+                    before: current_value.clone(),
+                    after: field.get_value(&field_best.config)
+                        .unwrap_or(&current_value)
+                        .to_string(),
+                    score_before: best_score,
+                    score_after: field_best.score,
+                    rationale: format!(
+                        "LLM proposed {} candidate prompts for {}; best improved score from {:.2} to {:.2}.",
+                        candidates.len(),
+                        field.field_path(),
+                        best_score,
+                        field_best.score,
+                    ),
+                    alternatives: all_scored.iter().skip(1)
+                        .filter_map(|c| {
+                            field.get_value(&c.config)
+                                .map(|v| (v.to_string(), c.score))
+                        })
+                        .collect(),
+                });
+
+                best_score = field_best.score;
+                best_config = field_best.config.clone();
+            }
         }
 
         Ok(OptimizationResult {
-            best_config: best.config.clone(),
-            best_score: best.score,
-            candidates: scored,
+            best_config: best_config.clone(),
+            best_score,
+            candidates: all_scored,
             baseline_score,
             optimization_log: log_entries,
         })
     }
 }
 
-fn average_score(results: &[crate::eval::EvalResult]) -> f64 {
-    if results.is_empty() { return 0.0; }
-    results.iter().map(|r| r.aggregate_score).sum::<f64>() / results.len() as f64
+/// Builds the meta-prompt for the LLM to generate candidate improvements.
+fn build_optimization_prompt(
+    field: &OptimizableField,
+    current_value: &str,
+    failure_summary: &str,
+    num_candidates: usize,
+) -> String {
+    let field_desc = field.description();
+    let field_path = field.field_path();
+
+    let template_instruction = if field.is_template() {
+        "\n\nCRITICAL: This is a template prompt. You MUST preserve ALL template variables \
+         (%%VARIABLE_NAME%% and {{variable_name}} placeholders) exactly as they appear. \
+         Do not rename, remove, or add template variables. Only improve the instructional \
+         text, structure, and clarity around the existing variables."
+    } else {
+        ""
+    };
+
+    format!(
+        "You are a prompt engineer. Analyze these agent failures and propose {num_candidates} \
+         improved versions of the prompt field `{field_path}`.\n\n\
+         Field description: {field_desc}\n\n\
+         Current prompt:\n{current_value}\n\n\
+         Failed scenarios:\n{failure_summary}\n\n\
+         Return a JSON array of {num_candidates} improved prompts. Format:\n\
+         [\"improved prompt 1\", \"improved prompt 2\", ...]{template_instruction}",
+    )
+}
+
+/// Checks that all %%VAR%% and {{var}} placeholders from the original are in the candidate.
+fn templates_preserved(original: &str, candidate: &str) -> bool {
+    // Check %%VAR%% placeholders
+    let mut i = 0;
+    let orig_bytes = original.as_bytes();
+    while i < orig_bytes.len().saturating_sub(3) {
+        if orig_bytes[i] == b'%' && orig_bytes[i + 1] == b'%' {
+            if let Some(end) = original[i + 2..].find("%%") {
+                let var = &original[i..i + 2 + end + 2];
+                if !candidate.contains(var) {
+                    return false;
+                }
+                i += 2 + end + 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    // Check {{var}} placeholders
+    let mut i = 0;
+    while i < orig_bytes.len().saturating_sub(3) {
+        if orig_bytes[i] == b'{' && orig_bytes[i + 1] == b'{' {
+            if let Some(end) = original[i + 2..].find("}}") {
+                let var = &original[i..i + 2 + end + 2];
+                if !candidate.contains(var) {
+                    return false;
+                }
+                i += 2 + end + 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    true
 }
 
 fn parse_candidate_prompts(response: &str) -> Result<Vec<String>> {
-    let s = response.trim();
-    let s = s.strip_prefix("```json").unwrap_or(s);
-    let s = s.strip_prefix("```").unwrap_or(s);
-    let s = s.strip_suffix("```").unwrap_or(s);
-    let s = s.trim();
-
+    let s = strip_code_fences(response);
     let v: Vec<String> = serde_json::from_str(s).map_err(|e| {
         crate::error::Error::LlmResponse(format!("failed to parse candidate prompts: {e}"))
     })?;
@@ -185,5 +290,47 @@ mod tests {
     fn test_parse_candidate_prompts_invalid() {
         let response = "not json at all";
         assert!(parse_candidate_prompts(response).is_err());
+    }
+
+    #[test]
+    fn test_templates_preserved_percent_vars() {
+        let original = "Goal: %%GOAL%%\nQuery: %%QUERY%%\nResults: %%RESULTS%%";
+        let good = "Improved preamble.\nGoal: %%GOAL%%\nQuery: %%QUERY%%\nResults: %%RESULTS%%";
+        let bad = "Improved preamble.\nGoal: %%GOAL%%\nQuery: %%QUERY%%";
+        assert!(templates_preserved(original, good));
+        assert!(!templates_preserved(original, bad));
+    }
+
+    #[test]
+    fn test_templates_preserved_mustache_vars() {
+        let original = "Tools: {{tools_section}}\nPrompt: {{orchestration_system_prompt}}";
+        let good = "Better intro.\nTools: {{tools_section}}\nPrompt: {{orchestration_system_prompt}}";
+        let bad = "Better intro.\nTools: {{tools_section}}";
+        assert!(templates_preserved(original, good));
+        assert!(!templates_preserved(original, bad));
+    }
+
+    #[test]
+    fn test_templates_preserved_no_vars() {
+        let original = "Just a plain prompt with no variables.";
+        let candidate = "A completely different prompt.";
+        assert!(templates_preserved(original, candidate));
+    }
+
+    #[test]
+    fn test_build_optimization_prompt_includes_template_warning() {
+        let field = OptimizableField::OrchestrationPrompt(
+            "orchestration.prompts.synthesis_prompt".into(),
+        );
+        let prompt = build_optimization_prompt(&field, "test %%GOAL%%", "failures", 3);
+        assert!(prompt.contains("CRITICAL: This is a template prompt"));
+        assert!(prompt.contains("%%VARIABLE_NAME%%"));
+    }
+
+    #[test]
+    fn test_build_optimization_prompt_no_template_warning_for_agent() {
+        let field = OptimizableField::AgentSystemPrompt;
+        let prompt = build_optimization_prompt(&field, "test prompt", "failures", 3);
+        assert!(!prompt.contains("CRITICAL: This is a template prompt"));
     }
 }

@@ -117,7 +117,124 @@ pub struct OrchestrationConfig {
     #[serde(default = "default_max_planning_cycles")] pub max_planning_cycles: usize,
     #[serde(default = "default_quality_threshold")] pub quality_threshold: f32,
     #[serde(default)] pub workers: HashMap<String, WorkerConfig>,
+    #[serde(default)] pub prompts: OrchestrationPrompts,
 }
+
+/// Overridable prompt templates for orchestration mode.
+///
+/// Each field defaults to the built-in prompt from Aura's orchestration mode.
+/// The optimizer populates these with improved variants when optimizing.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OrchestrationPrompts {
+    #[serde(default = "default_orchestrator_preamble")]
+    pub orchestrator_preamble: String,
+    #[serde(default = "default_worker_preamble")]
+    pub worker_preamble: String,
+    #[serde(default = "default_worker_task_prompt")]
+    pub worker_task_prompt: String,
+    #[serde(default = "default_synthesis_prompt")]
+    pub synthesis_prompt: String,
+    #[serde(default = "default_evaluation_preamble")]
+    pub evaluation_preamble: String,
+    #[serde(default = "default_evaluation_prompt")]
+    pub evaluation_prompt: String,
+    #[serde(default = "default_reflection_prompt")]
+    pub reflection_prompt: String,
+    #[serde(default = "default_phase_continuation_prompt")]
+    pub phase_continuation_prompt: String,
+    #[serde(default = "default_session_history_template")]
+    pub session_history_template: String,
+    #[serde(default = "default_todo_system_prompt")]
+    pub todo_system_prompt: String,
+    #[serde(default = "default_todo_tool_prompt")]
+    pub todo_tool_prompt: String,
+}
+
+impl Default for OrchestrationPrompts {
+    fn default() -> Self {
+        Self {
+            orchestrator_preamble: default_orchestrator_preamble(),
+            worker_preamble: default_worker_preamble(),
+            worker_task_prompt: default_worker_task_prompt(),
+            synthesis_prompt: default_synthesis_prompt(),
+            evaluation_preamble: default_evaluation_preamble(),
+            evaluation_prompt: default_evaluation_prompt(),
+            reflection_prompt: default_reflection_prompt(),
+            phase_continuation_prompt: default_phase_continuation_prompt(),
+            session_history_template: default_session_history_template(),
+            todo_system_prompt: default_todo_system_prompt(),
+            todo_tool_prompt: default_todo_tool_prompt(),
+        }
+    }
+}
+
+impl OrchestrationPrompts {
+    /// Returns an iterator over (field_path, prompt_value) for all prompt fields.
+    pub fn fields(&self) -> Vec<(&'static str, &str)> {
+        vec![
+            ("orchestration.prompts.orchestrator_preamble", &self.orchestrator_preamble),
+            ("orchestration.prompts.worker_preamble", &self.worker_preamble),
+            ("orchestration.prompts.worker_task_prompt", &self.worker_task_prompt),
+            ("orchestration.prompts.synthesis_prompt", &self.synthesis_prompt),
+            ("orchestration.prompts.evaluation_preamble", &self.evaluation_preamble),
+            ("orchestration.prompts.evaluation_prompt", &self.evaluation_prompt),
+            ("orchestration.prompts.reflection_prompt", &self.reflection_prompt),
+            ("orchestration.prompts.phase_continuation_prompt", &self.phase_continuation_prompt),
+            ("orchestration.prompts.session_history_template", &self.session_history_template),
+            ("orchestration.prompts.todo_system_prompt", &self.todo_system_prompt),
+            ("orchestration.prompts.todo_tool_prompt", &self.todo_tool_prompt),
+        ]
+    }
+
+    /// Sets a prompt field by its dotted path. Returns true if the field was found.
+    pub fn set_field(&mut self, field: &str, value: String) -> bool {
+        match field {
+            "orchestration.prompts.orchestrator_preamble" => self.orchestrator_preamble = value,
+            "orchestration.prompts.worker_preamble" => self.worker_preamble = value,
+            "orchestration.prompts.worker_task_prompt" => self.worker_task_prompt = value,
+            "orchestration.prompts.synthesis_prompt" => self.synthesis_prompt = value,
+            "orchestration.prompts.evaluation_preamble" => self.evaluation_preamble = value,
+            "orchestration.prompts.evaluation_prompt" => self.evaluation_prompt = value,
+            "orchestration.prompts.reflection_prompt" => self.reflection_prompt = value,
+            "orchestration.prompts.phase_continuation_prompt" => self.phase_continuation_prompt = value,
+            "orchestration.prompts.session_history_template" => self.session_history_template = value,
+            "orchestration.prompts.todo_system_prompt" => self.todo_system_prompt = value,
+            "orchestration.prompts.todo_tool_prompt" => self.todo_tool_prompt = value,
+            _ => return false,
+        }
+        true
+    }
+
+    /// Gets a prompt field value by its dotted path.
+    pub fn get_field(&self, field: &str) -> Option<&str> {
+        match field {
+            "orchestration.prompts.orchestrator_preamble" => Some(&self.orchestrator_preamble),
+            "orchestration.prompts.worker_preamble" => Some(&self.worker_preamble),
+            "orchestration.prompts.worker_task_prompt" => Some(&self.worker_task_prompt),
+            "orchestration.prompts.synthesis_prompt" => Some(&self.synthesis_prompt),
+            "orchestration.prompts.evaluation_preamble" => Some(&self.evaluation_preamble),
+            "orchestration.prompts.evaluation_prompt" => Some(&self.evaluation_prompt),
+            "orchestration.prompts.reflection_prompt" => Some(&self.reflection_prompt),
+            "orchestration.prompts.phase_continuation_prompt" => Some(&self.phase_continuation_prompt),
+            "orchestration.prompts.session_history_template" => Some(&self.session_history_template),
+            "orchestration.prompts.todo_system_prompt" => Some(&self.todo_system_prompt),
+            "orchestration.prompts.todo_tool_prompt" => Some(&self.todo_tool_prompt),
+            _ => None,
+        }
+    }
+}
+
+fn default_orchestrator_preamble() -> String { crate::prompts::ORCHESTRATOR_PREAMBLE.to_string() }
+fn default_worker_preamble() -> String { crate::prompts::WORKER_PREAMBLE.to_string() }
+fn default_worker_task_prompt() -> String { crate::prompts::WORKER_TASK_PROMPT.to_string() }
+fn default_synthesis_prompt() -> String { crate::prompts::SYNTHESIS_PROMPT.to_string() }
+fn default_evaluation_preamble() -> String { crate::prompts::EVALUATION_PREAMBLE.to_string() }
+fn default_evaluation_prompt() -> String { crate::prompts::EVALUATION_PROMPT.to_string() }
+fn default_reflection_prompt() -> String { crate::prompts::REFLECTION_PROMPT.to_string() }
+fn default_phase_continuation_prompt() -> String { crate::prompts::PHASE_CONTINUATION_PROMPT.to_string() }
+fn default_session_history_template() -> String { crate::prompts::SESSION_HISTORY_TEMPLATE.to_string() }
+fn default_todo_system_prompt() -> String { crate::prompts::TODO_SYSTEM_PROMPT.to_string() }
+fn default_todo_tool_prompt() -> String { crate::prompts::TODO_TOOL_PROMPT.to_string() }
 
 fn default_max_planning_cycles() -> usize { 3 }
 fn default_quality_threshold() -> f32 { 0.8 }

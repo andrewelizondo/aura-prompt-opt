@@ -4,6 +4,7 @@ pub mod error;
 pub mod eval;
 pub mod llm;
 pub mod optimizer;
+pub mod prompts;
 
 pub use error::{Error, Result};
 
@@ -12,8 +13,8 @@ pub use config::{parse_toml, serialize_toml, AuraConfig};
 pub use eval::{EvalDataset, EvalResult, EvalRunner, EvalScenario, ExactMatch, FuzzyMatch, LlmJudge, Metric};
 pub use llm::LlmClient;
 pub use optimizer::{
-    BootstrapFewShot, InstructionOptimizer, MiproOptimizer, OptimizationLogEntry,
-    OptimizationResult,
+    BootstrapFewShot, InstructionOptimizer, MiproOptimizer, OptimizableField,
+    OptimizationLogEntry, OptimizationResult,
 };
 
 use std::path::Path;
@@ -64,15 +65,28 @@ impl AuraOptimizer {
         config: &AuraConfig,
         dataset: &EvalDataset,
     ) -> Result<CompilationOutput> {
-        // Stage 1: BootstrapFewShot
+        // Determine which fields to optimize based on config
+        let all_fields = OptimizableField::all_fields(config);
+        let has_orchestration = all_fields.iter().any(|f| {
+            matches!(f, OptimizableField::OrchestrationPrompt(_) | OptimizableField::WorkerPreamble(_))
+        });
+
+        // Stage 1: BootstrapFewShot on the agent system prompt
         let bootstrap = BootstrapFewShot::new()
             .with_pass_threshold(self.pass_threshold)
             .with_max_examples(self.max_bootstrap_examples);
         let bootstrap_result = bootstrap.optimize(config, dataset, &self.runner).await?;
 
-        // Stage 2: InstructionOptimizer on best from stage 1
-        let instruction_opt = InstructionOptimizer::new(self.llm_client.clone())
-            .with_num_candidates(self.instruction_candidates);
+        // Stage 2: InstructionOptimizer — target all fields if orchestration is enabled
+        let instruction_opt = if has_orchestration {
+            InstructionOptimizer::new(self.llm_client.clone())
+                .with_num_candidates(self.instruction_candidates)
+                .with_all_fields(config)
+        } else {
+            InstructionOptimizer::new(self.llm_client.clone())
+                .with_num_candidates(self.instruction_candidates)
+        };
+
         let instruction_result = instruction_opt
             .optimize(&bootstrap_result.best_config, dataset, &self.runner)
             .await?;
@@ -101,5 +115,6 @@ mod tests {
         let _ = std::mem::size_of::<EvalDataset>();
         let _ = std::mem::size_of::<EvalScenario>();
         let _ = std::mem::size_of::<OptimizationResult>();
+        let _ = std::mem::size_of::<OptimizableField>();
     }
 }

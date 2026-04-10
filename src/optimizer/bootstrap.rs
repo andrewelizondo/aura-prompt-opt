@@ -1,16 +1,23 @@
 use crate::config::schema::AuraConfig;
 use crate::error::Result;
 use crate::eval::{EvalDataset, EvalResult, EvalRunner};
-use crate::optimizer::{OptimizationLogEntry, OptimizationResult, ScoredCandidate};
+use crate::optimizer::{
+    average_score, OptimizableField, OptimizationLogEntry, OptimizationResult, ScoredCandidate,
+};
 
 pub struct BootstrapFewShot {
     pub pass_threshold: f64,
     pub max_examples: usize,
+    pub target_field: OptimizableField,
 }
 
 impl BootstrapFewShot {
     pub fn new() -> Self {
-        Self { pass_threshold: 0.7, max_examples: 5 }
+        Self {
+            pass_threshold: 0.7,
+            max_examples: 5,
+            target_field: OptimizableField::AgentSystemPrompt,
+        }
     }
 
     pub fn with_pass_threshold(mut self, threshold: f64) -> Self {
@@ -20,6 +27,12 @@ impl BootstrapFewShot {
 
     pub fn with_max_examples(mut self, n: usize) -> Self {
         self.max_examples = n;
+        self
+    }
+
+    /// Set the prompt field to inject few-shot examples into. Defaults to `agent.system_prompt`.
+    pub fn with_target_field(mut self, field: OptimizableField) -> Self {
+        self.target_field = field;
         self
     }
 
@@ -61,12 +74,15 @@ impl BootstrapFewShot {
             });
         }
 
-        // Step 3: Build few-shot block and inject into prompt
+        // Step 3: Build few-shot block and inject into the target prompt field
         let few_shot_block = build_few_shot_block(&passing);
         let mut optimized_config = config.clone();
-        let original_prompt = config.agent.system_prompt.clone();
+
+        let original_prompt = self.target_field.get_value(config)
+            .unwrap_or("")
+            .to_string();
         let new_prompt = format!("{}\n\n{}", original_prompt.trim_end(), few_shot_block);
-        optimized_config.agent.system_prompt = new_prompt.clone();
+        self.target_field.set_value(&mut optimized_config, new_prompt.clone());
 
         // Step 4: Evaluate optimized config
         let mut optimized_results = Vec::new();
@@ -78,7 +94,7 @@ impl BootstrapFewShot {
 
         let log_entry = OptimizationLogEntry {
             optimizer: "BootstrapFewShot".into(),
-            field: "agent.system_prompt".into(),
+            field: self.target_field.field_path(),
             before: original_prompt.clone(),
             after: new_prompt,
             score_before: baseline_score,
@@ -125,11 +141,6 @@ impl BootstrapFewShot {
 
 impl Default for BootstrapFewShot {
     fn default() -> Self { Self::new() }
-}
-
-fn average_score(results: &[EvalResult]) -> f64 {
-    if results.is_empty() { return 0.0; }
-    results.iter().map(|r| r.aggregate_score).sum::<f64>() / results.len() as f64
 }
 
 fn build_few_shot_block(
@@ -184,5 +195,23 @@ mod tests {
         let result = bfs.optimize(&config, &dataset, &runner).await.unwrap();
         assert_eq!(result.optimization_log.len(), 1);
         assert!(result.optimization_log[0].after.contains("## Examples"));
+    }
+
+    #[test]
+    fn test_bootstrap_target_field_default() {
+        let bfs = BootstrapFewShot::new();
+        assert_eq!(bfs.target_field, OptimizableField::AgentSystemPrompt);
+    }
+
+    #[test]
+    fn test_bootstrap_target_field_override() {
+        let bfs = BootstrapFewShot::new()
+            .with_target_field(OptimizableField::OrchestrationPrompt(
+                "orchestration.prompts.orchestrator_preamble".into(),
+            ));
+        assert_eq!(
+            bfs.target_field.field_path(),
+            "orchestration.prompts.orchestrator_preamble"
+        );
     }
 }

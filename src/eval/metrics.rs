@@ -160,8 +160,8 @@ impl Metric for LlmJudge {
 }
 
 fn parse_judge_response(response: &str) -> Result<(f64, String)> {
-    let json_str = extract_json(response);
-    let v: serde_json::Value = serde_json::from_str(&json_str)
+    let json_str = crate::optimizer::strip_code_fences(response);
+    let v: serde_json::Value = serde_json::from_str(json_str)
         .map_err(|e| crate::error::Error::LlmResponse(format!("judge JSON parse error: {e}")))?;
 
     let score = v["score"]
@@ -180,14 +180,6 @@ fn parse_judge_response(response: &str) -> Result<(f64, String)> {
     }
 
     Ok((score, rationale))
-}
-
-fn extract_json(s: &str) -> String {
-    let s = s.trim();
-    let s = s.strip_prefix("```json").unwrap_or(s);
-    let s = s.strip_prefix("```").unwrap_or(s);
-    let s = s.strip_suffix("```").unwrap_or(s);
-    s.trim().to_string()
 }
 
 #[cfg(test)]

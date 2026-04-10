@@ -2,17 +2,25 @@ use crate::config::schema::AuraConfig;
 use crate::error::Result;
 use crate::eval::{EvalDataset, EvalRunner};
 use crate::llm::LlmClient;
-use crate::optimizer::{InstructionOptimizer, OptimizationResult, ScoredCandidate};
+use crate::optimizer::{
+    average_score, InstructionOptimizer, OptimizableField, OptimizationResult, ScoredCandidate,
+};
 
 pub struct MiproOptimizer {
     pub client: LlmClient,
     pub num_rounds: usize,
     pub candidates_per_round: usize,
+    pub target_fields: Vec<OptimizableField>,
 }
 
 impl MiproOptimizer {
     pub fn new(client: LlmClient) -> Self {
-        Self { client, num_rounds: 3, candidates_per_round: 3 }
+        Self {
+            client,
+            num_rounds: 3,
+            candidates_per_round: 3,
+            target_fields: vec![OptimizableField::AgentSystemPrompt],
+        }
     }
 
     pub fn with_rounds(mut self, rounds: usize) -> Self {
@@ -22,6 +30,18 @@ impl MiproOptimizer {
 
     pub fn with_candidates_per_round(mut self, n: usize) -> Self {
         self.candidates_per_round = n;
+        self
+    }
+
+    /// Set specific fields to optimize. If not called, defaults to `agent.system_prompt` only.
+    pub fn with_target_fields(mut self, fields: Vec<OptimizableField>) -> Self {
+        self.target_fields = fields;
+        self
+    }
+
+    /// Automatically target all optimizable fields found in the config.
+    pub fn with_all_fields(mut self, config: &AuraConfig) -> Self {
+        self.target_fields = OptimizableField::all_fields(config);
         self
     }
 
@@ -53,7 +73,8 @@ impl MiproOptimizer {
 
         for round in 1..=self.num_rounds {
             let instruction_opt = InstructionOptimizer::new(self.client.clone())
-                .with_num_candidates(self.candidates_per_round);
+                .with_num_candidates(self.candidates_per_round)
+                .with_target_fields(self.target_fields.clone());
 
             let round_result = instruction_opt
                 .optimize(&current_config, dataset, runner)
@@ -75,8 +96,7 @@ impl MiproOptimizer {
             }
         }
 
-        all_candidates
-            .sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        all_candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
 
         let best_candidate = all_candidates.first().unwrap().clone();
 
@@ -90,11 +110,6 @@ impl MiproOptimizer {
     }
 }
 
-fn average_score(results: &[crate::eval::EvalResult]) -> f64 {
-    if results.is_empty() { return 0.0; }
-    results.iter().map(|r| r.aggregate_score).sum::<f64>() / results.len() as f64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,5 +121,13 @@ mod tests {
         let opt = MiproOptimizer::new(client).with_rounds(2).with_candidates_per_round(4);
         assert_eq!(opt.num_rounds, 2);
         assert_eq!(opt.candidates_per_round, 4);
+    }
+
+    #[test]
+    fn test_mipro_target_fields_default() {
+        let client = LlmClient::new("http://localhost", "key", "gpt-4o");
+        let opt = MiproOptimizer::new(client);
+        assert_eq!(opt.target_fields.len(), 1);
+        assert_eq!(opt.target_fields[0], OptimizableField::AgentSystemPrompt);
     }
 }

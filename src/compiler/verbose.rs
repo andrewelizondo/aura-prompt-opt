@@ -54,6 +54,24 @@ fn should_annotate(toml_line: &str, field: &str) -> bool {
         "agent.system_prompt" => toml_line == "[agent]" || toml_line.starts_with("system_prompt"),
         "agent.turn_depth" => toml_line.starts_with("turn_depth"),
         "agent.temperature" => toml_line.starts_with("temperature"),
+        _ if field.starts_with("orchestration.prompts.") => {
+            // Match the TOML key for any orchestration prompt field
+            let key = field.rsplit('.').next().unwrap_or("");
+            toml_line == "[orchestration.prompts]"
+                || toml_line == "[orchestration]"
+                || toml_line.starts_with(key)
+        }
+        _ if field.starts_with("orchestration.workers.") => {
+            // Match worker preamble fields like orchestration.workers.foo.preamble
+            let parts: Vec<&str> = field.split('.').collect();
+            if parts.len() >= 4 {
+                let worker_name = parts[2];
+                toml_line.contains(worker_name) && toml_line.contains("preamble")
+                    || toml_line == format!("[orchestration.workers.{worker_name}]")
+            } else {
+                false
+            }
+        }
         _ => false,
     }
 }

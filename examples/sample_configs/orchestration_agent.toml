@@ -1,0 +1,44 @@
+# Sample Aura config with orchestration mode enabled.
+# aura-prompt-opt will optimize both the agent system prompt
+# and all orchestration prompt templates.
+
+[llm]
+provider = "anthropic"
+api_key = "{{ env.ANTHROPIC_API_KEY }}"
+model = "claude-sonnet-4-6"
+
+[mcp]
+sanitize_schemas = true
+
+[mcp.servers.database]
+transport = "http_streamable"
+url = "http://localhost:8081/mcp"
+description = "PostgreSQL database queries and schema inspection"
+
+[mcp.servers.monitoring]
+transport = "http_streamable"
+url = "http://localhost:8082/mcp"
+description = "Application metrics, logs, and alerting via Datadog"
+
+[agent]
+name = "Platform Engineering Agent"
+system_prompt = """
+You are a platform engineering agent. Help users with infrastructure,
+database operations, and monitoring tasks.
+"""
+turn_depth = 20
+
+[orchestration]
+enabled = true
+max_planning_cycles = 3
+quality_threshold = 0.8
+
+[orchestration.workers.database]
+description = "Executes SQL queries and inspects database schemas"
+preamble = "You are a database specialist. Execute queries carefully and report results clearly."
+mcp_filter = ["database"]
+
+[orchestration.workers.monitoring]
+description = "Queries metrics, reads logs, and manages alerts"
+preamble = "You are a monitoring specialist. Query metrics and logs to diagnose issues."
+mcp_filter = ["monitoring"]

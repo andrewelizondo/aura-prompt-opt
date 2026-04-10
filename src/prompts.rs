@@ -1,339 +1,231 @@
-/// Default orchestration prompt templates from Aura's orchestration mode.
+/// Prompt discovery and management for Aura orchestration templates.
 ///
-/// These are the embedded prompts that aura-prompt-opt knows how to optimize.
-/// Each constant matches the corresponding `.md` file in
-/// `aura/crates/aura/src/prompts/` on the `feature/orchestration-mode` branch.
+/// Supports three layers of prompt resolution:
+/// 1. **Embedded defaults** — compiled-in from Aura's `feature/orchestration-mode` branch
+/// 2. **Discovered from Aura repo** — reads `.md` files from a local checkout (dynamic)
+/// 3. **User TOML overrides** — individual prompt overrides in the config file
+///
+/// Each layer overrides the previous.
 
-pub const ORCHESTRATOR_PREAMBLE: &str = r#"# Orchestration Coordinator
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
-You are a coordinator agent in a multi-agent orchestration system. Your role is to analyze incoming queries and route them to the best execution path using your routing tools.
+// ── Embedded defaults ──────────────────────────────────���───────────────
 
-## Your Tools
+pub const ORCHESTRATOR_PREAMBLE: &str = include_str!("prompts/orchestrator_preamble.md");
+pub const WORKER_PREAMBLE: &str = include_str!("prompts/worker_preamble.md");
+pub const WORKER_TASK_PROMPT: &str = include_str!("prompts/worker_task_prompt.md");
+pub const SYNTHESIS_PROMPT: &str = include_str!("prompts/synthesis_prompt.md");
+pub const EVALUATION_PREAMBLE: &str = include_str!("prompts/evaluation_preamble.md");
+pub const EVALUATION_PROMPT: &str = include_str!("prompts/evaluation_prompt.md");
+pub const REFLECTION_PROMPT: &str = include_str!("prompts/reflection_prompt.md");
+pub const PHASE_CONTINUATION_PROMPT: &str = include_str!("prompts/phase_continuation_prompt.md");
+pub const SESSION_HISTORY_TEMPLATE: &str = include_str!("prompts/session_history_template.md");
+pub const TODO_SYSTEM_PROMPT: &str = include_str!("prompts/todo_system_prompt.md");
+pub const TODO_TOOL_PROMPT: &str = include_str!("prompts/todo_tool_prompt.md");
 
-{{tools_section}}
-
-## Core Behavior
-
-1. **Route Every Query**: Call exactly one routing tool per query
-2. **Prefer Action Over Clarification**: If a reasonable interpretation exists, create a plan rather than asking for clarification
-3. **Delegate Tool Work**: Workers execute tools — do not try to answer questions that require tool execution yourself
-4. **Keep Plans Focused**: Use 1-4 tasks per plan; each task should be independently actionable
-5. **Resolve tool gaps pragmatically**: If a user requests an operation with no matching tool, create a plan using the available tools and note the gap in `planning_summary`. Do NOT deliberate at length about missing capabilities — route what you can, report what you cannot.
-
-## Custom Instructions
-
-{{orchestration_system_prompt}}
-
-{{recon_guidance}}
-
-## Task Description Quality
-
-When writing task descriptions for `create_plan`, **fully resolve all conversational references**. Workers do NOT see the conversation history. Replace:
-- Pronouns ("those", "them", "it") with the concrete values they refer to
-- Relative references ("the above numbers", "the previous result") with actual content
-- Implicit context with explicit instructions
-
-Example: Instead of "compute the mean of those numbers", write "compute the mean of 10, 20, 30".
-
-## Planning Guidelines
-
-When creating plans with `create_plan`, provide an ordered list of **steps**:
-
-- **Steps are sequential by default** — each step runs after the previous one completes and receives its results.
-- **Use `{"parallel": [...]}` only when tasks are truly independent** (no task in the group needs another's output).
-- Assign each step to the worker whose capabilities best match it.
-- Keep task descriptions specific and actionable.
-
-### Example: Sequential (most common)
-
-```json
-{
-  "goal": "Compute the mean of [10,20,30] then multiply by 3",
-  "steps": [
-    {"task": "Compute the mean of the numbers 10, 20, 30", "worker": "statistics"},
-    {"task": "Multiply the result by 3", "worker": "arithmetic"}
-  ],
-  "routing_rationale": "Requires two dependent computations",
-  "planning_summary": "First compute the mean, then multiply"
+/// Returns the embedded prompt defaults as a map of name → content.
+pub fn embedded_defaults() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("orchestrator_preamble".into(), ORCHESTRATOR_PREAMBLE.into()),
+        ("worker_preamble".into(), WORKER_PREAMBLE.into()),
+        ("worker_task_prompt".into(), WORKER_TASK_PROMPT.into()),
+        ("synthesis_prompt".into(), SYNTHESIS_PROMPT.into()),
+        ("evaluation_preamble".into(), EVALUATION_PREAMBLE.into()),
+        ("evaluation_prompt".into(), EVALUATION_PROMPT.into()),
+        ("reflection_prompt".into(), REFLECTION_PROMPT.into()),
+        ("phase_continuation_prompt".into(), PHASE_CONTINUATION_PROMPT.into()),
+        ("session_history_template".into(), SESSION_HISTORY_TEMPLATE.into()),
+        ("todo_system_prompt".into(), TODO_SYSTEM_PROMPT.into()),
+        ("todo_tool_prompt".into(), TODO_TOOL_PROMPT.into()),
+    ])
 }
-```
 
-### Example: Parallel + Sequential
+// ── Dynamic discovery ─────────────────────────────���────────────────────
 
-```json
-{
-  "goal": "Compute median and sin(45°), then multiply",
-  "steps": [
-    {"parallel": [
-      {"task": "Compute the median of 10, 20, 30", "worker": "statistics"},
-      {"task": "Compute the sine of 45 degrees", "worker": "trigonometry"}
-    ]},
-    {"task": "Multiply the two results together", "worker": "arithmetic"}
-  ],
-  "routing_rationale": "Two independent computations followed by a dependent one",
-  "planning_summary": "Compute median and sin(45°) in parallel, then multiply"
+/// A prompt discovered from an Aura repo checkout.
+#[derive(Debug, Clone)]
+pub struct DiscoveredPrompt {
+    /// Short name derived from the filename stem (e.g. `synthesis_prompt`).
+    pub name: String,
+    /// Full content of the `.md` file.
+    pub content: String,
+    /// Template variables found in the content (`%%VAR%%` and `{{var}}`).
+    pub template_vars: Vec<String>,
+    /// Source file path.
+    pub source_path: PathBuf,
 }
-```
 
-Do NOT use parallel groups for steps that depend on each other — sequential ordering handles dependencies automatically.
-
-## Artifacts
-
-When a task result is too large to include inline, it is saved to an artifact file and the inline result will contain a summary with a reference like `[Full result (N chars) saved to artifact: task-0-result.txt]`. Use `read_artifact` to load the full content when the summary is insufficient for synthesis or evaluation."#;
-
-pub const WORKER_PREAMBLE: &str = r#"# Worker Agent
-
-{{worker_system_prompt}}
-
-## Scope
-
-You are assigned ONE specific task. Complete it and stop.
-Ignore any broader goals, prior tasks, or future steps — they are handled by other workers.
-
-## Task Execution
-
-1. **Read** your task description carefully — it defines your entire scope
-2. **Execute** using your available tools — do not compute results yourself
-3. **Report** the result value clearly so downstream workers can use it
-
-## Critical Rules
-
-- DO complete your assigned task to the best of your ability
-- DO report your result value prominently (e.g. "Result: 20.0")
-- DO report failures honestly with error details
-- DO NOT try to solve tasks outside your assignment — other workers handle those
-- DO NOT re-do work described in prior results — use the provided values
-- DO NOT make up information — if you don't know, say so
-- If task context references an artifact file, use `read_artifact` to load the full content
-- If your task references prior conversation, use `get_conversation_context` to retrieve relevant messages"#;
-
-pub const WORKER_TASK_PROMPT: &str = r#"BACKGROUND (read-only, do not act on this): %%ORCHESTRATION_GOAL%%
-
-YOUR TASK: %%YOUR_TASK%%
-
-%%CONTEXT%%
-
-Use your tools to complete this task — do not compute results manually. When you have the answer, respond with:
-Result: <your answer>
-Then stop. Do not call any more tools after writing your result."#;
-
-pub const SYNTHESIS_PROMPT: &str = r#"You are synthesizing results from multiple tasks into a coherent response.
-
-ORCHESTRATION GOAL: %%GOAL%%
-
-ORIGINAL USER QUERY: %%QUERY%%
-
-TASK RESULTS:
-%%RESULTS%%
-
-INSTRUCTIONS:
-IMPORTANT: Your ONLY task is to synthesize the results above. Do NOT call any tools, create plans, or execute new work.
-
-1. Combine these results into a single, coherent response
-2. Ensure the response directly addresses the original query
-3. Preserve important details from each task
-4. Do NOT just concatenate - synthesize into natural prose
-5. If results conflict, note the discrepancy
-
-Provide the synthesized response:"#;
-
-pub const EVALUATION_PREAMBLE: &str = r#"You are an evaluation agent. Your job is to assess the quality of a synthesized response.
-
-You have one tool: `submit_evaluation`. Call it exactly once with your score, reasoning, and any gaps identified."#;
-
-pub const EVALUATION_PROMPT: &str = r#"Evaluate how well this response answers the user's question.
-
-ORIGINAL USER QUERY: %%QUERY%%
-
-ORCHESTRATION GOAL: %%GOAL%%
-%%WORKERS_CONTEXT%%
-%%TASK_EVIDENCE%%
-SYNTHESIZED RESPONSE:
-%%RESULT%%
-
-EVALUATION CRITERIA:
-1. **Completeness**: Does it fully address the query?
-2. **Accuracy**: Is the information correct? Cross-reference the TASK EXECUTION EVIDENCE above — data that matches task results is verified, not hallucinated.
-3. **Coherence**: Is the response well-organized and clear?
-4. **Actionability**: If the user asked for help, can they act on this?
-
-IMPORTANT: If the user asked about this system's capabilities or workers, verify the response matches the SYSTEM CONTEXT above. Generic or hallucinated answers about unrelated "workers" should score low on Accuracy.
-
-REQUIRED ACTION: You MUST call the `submit_evaluation` tool with your assessment. Do not respond with text — use the tool.
-- `score`: 0.0 to 1.0
-- `reasoning`: brief explanation of your score
-- `gaps`: array of missing elements (empty array if none)"#;
-
-pub const REFLECTION_PROMPT: &str = r#"REPLAN CYCLE %%ITERATION%% of %%MAX_ITERATIONS%%%%URGENCY%%
-
-Previous attempt: %%SUCCEEDED%% of %%TOTAL%% tasks succeeded.
-Goal: %%GOAL%%
-Quality Score: %%SCORE%%
-
-%%COMPLETED_SECTION%%%%BLOCKED_SECTION%%%%REDESIGN_SECTION%%EVALUATION:
-%%REASONING%%
-
-GAPS TO ADDRESS:
-%%GAPS%%
-%%FAILURE_HISTORY%%
-YOUR TASK:
-Create a new plan replacing ONLY the tasks listed under TASKS TO REDESIGN.%%REUSE_GUIDANCE%%
-Do not include completed or blocked tasks in your new plan."#;
-
-pub const PHASE_CONTINUATION_PROMPT: &str = r#"# Phase Continuation Decision
-
-Phase **%%COMPLETED_PHASE_LABEL%%** (phase %%COMPLETED_PHASE_ID%%) has completed.
-
-## Goal
-%%GOAL%%
-
-## Completed Phase Results
-%%COMPLETED_PHASE_RESULTS%%
-
-## Remaining Phases
-%%REMAINING_PHASES%%
-
-## Your Decision
-
-Based on the results from this phase, decide how to proceed:
-
-1. **Continue** — The results are sufficient to proceed with the next phase as planned.
-   - Discovery phases that returned expected information (available tools, data schemas, configuration) should **always continue**
-   - Computational phases that produced results matching the plan's expectations should continue
-   - Minor variations or additional details do not warrant replanning
-
-2. **Replan** — The results reveal that the remaining phases are **fundamentally wrong**.
-   - Only replan if results are surprising, contradictory, or reveal the remaining approach is infeasible
-   - Examples: required API doesn't exist, conflicting data invalidates assumptions, key capability is missing
-   - Do NOT replan just because you learned more details about what's available
-
-**Default to continue** unless the results genuinely invalidate the remaining phases.
-
-Respond with exactly one word: `continue` or `replan`."#;
-
-pub const SESSION_HISTORY_TEMPLATE: &str = r#"## Session History
-
-Current time: %%CURRENT_TIME%%
-
-You have context from %%TURN_COUNT%% previous orchestration run(s) in this session.
-
-**CRITICAL: Workers have NO access to session history. Every value a worker needs from a prior turn MUST appear as a literal number in its task description.**
-
-**How to use this context:**
-- **Avoid redundant work**: Do not re-plan or re-call tools for tasks that already succeeded — reference their results directly in new task descriptions
-- **Embed concrete values for workers**: When a task depends on a prior turn's result, include the actual number (e.g., "The mean was 20, now multiply by 3" — NOT "use the previous result")
-- **Learn from failures**: If a prior run failed or scored poorly, try a different decomposition or approach
-- **Do not assume stale data is current**: Prior results may be outdated if the user's follow-up implies changed conditions — check timestamps
-
-%%TURN_ENTRIES%%"#;
-
-pub const TODO_SYSTEM_PROMPT: &str = r#"## `write_todos`
-
-You have access to the `write_todos` tool to help you manage and plan complex objectives.
-Use this tool for complex objectives to ensure that you are tracking each necessary step and giving the user visibility into your progress.
-This tool is very helpful for planning complex objectives, and for breaking down these larger complex objectives into smaller steps.
-
-It is critical that you mark todos as completed as soon as you are done with a step. Do not batch up multiple steps before marking them as completed.
-For simple objectives that only require a few steps, it is better to just complete the objective directly and NOT use this tool.
-
-## Important To-Do List Usage Notes to Remember
-- The `write_todos` tool should never be called multiple times in parallel.
-- Don't be afraid to revise the To-Do list as you go. New information may reveal new tasks that need to be done, or old tasks that are irrelevant."#;
-
-pub const TODO_TOOL_PROMPT: &str = r#"Use this tool to create and manage a structured task list for your current work session. This helps you track progress, organize complex tasks, and demonstrate thoroughness to the user.
-
-Only use this tool if you think it will be helpful in staying organized. If the user's request is trivial and takes less than 3 steps, it is better to NOT use this tool and just do the task directly.
-
-## When to Use This Tool
-Use this tool in these scenarios:
-
-1. Complex multi-step tasks - When a task requires 3 or more distinct steps or actions
-2. Non-trivial and complex tasks - Tasks that require careful planning or multiple operations
-3. User explicitly requests todo list - When the user directly asks you to use the todo list
-4. User provides multiple tasks - When users provide a list of things to be done (numbered or comma-separated)
-5. The plan may need future revisions or updates based on results from the first few steps
-
-## How to Use This Tool
-1. When you start working on a task - Mark it as in_progress BEFORE beginning work.
-2. After completing a task - Mark it as completed and add any new follow-up tasks discovered during implementation.
-3. You can also update future tasks, such as deleting them if they are no longer necessary, or adding new tasks that are necessary. Don't change previously completed tasks.
-4. You can make several updates to the todo list at once. For example, when you complete a task, you can mark the next task you need to start as in_progress.
-
-## When NOT to Use This Tool
-It is important to skip using this tool when:
-1. There is only a single, straightforward task
-2. The task is trivial and tracking it provides no benefit
-3. The task can be completed in less than 3 trivial steps
-4. The task is purely conversational or informational
-
-## Task States and Management
-
-1. **Task States**: Use these states to track progress:
-   - pending: Task not yet started
-   - in_progress: Currently working on (you can have multiple tasks in_progress at a time if they are not related to each other and can be run in parallel)
-   - completed: Task finished successfully
-
-2. **Task Management**:
-   - Update task status in real-time as you work
-   - Mark tasks complete IMMEDIATELY after finishing (don't batch completions)
-   - Complete current tasks before starting new ones
-   - Remove tasks that are no longer relevant from the list entirely
-   - IMPORTANT: When you write this todo list, you should mark your first task (or tasks) as in_progress immediately!
-   - IMPORTANT: Unless all tasks are completed, you should always have at least one task in_progress to show the user that you are working on something.
-
-3. **Task Completion Requirements**:
-   - ONLY mark a task as completed when you have FULLY accomplished it
-   - If you encounter errors, blockers, or cannot finish, keep the task as in_progress
-   - When blocked, create a new task describing what needs to be resolved
-   - Never mark a task as completed if:
-     - There are unresolved issues or errors
-     - Work is partial or incomplete
-     - You encountered blockers that prevent completion
-     - You couldn't find necessary resources or dependencies
-     - Quality standards haven't been met
-
-4. **Task Breakdown**:
-   - Create specific, actionable items
-   - Break complex tasks into smaller, manageable steps
-   - Use clear, descriptive task names
-
-Being proactive with task management demonstrates attentiveness and ensures you complete all requirements successfully.
-Remember: If you only need to make a few tool calls to complete a task, and it is clear what you need to do, it is better to just do the task directly and NOT call this tool at all."#;
-
-/// All optimizable prompt field names and their defaults.
-pub const ALL_ORCHESTRATION_PROMPTS: &[(&str, &str)] = &[
-    ("orchestration.orchestrator_preamble", ORCHESTRATOR_PREAMBLE),
-    ("orchestration.worker_preamble", WORKER_PREAMBLE),
-    ("orchestration.worker_task_prompt", WORKER_TASK_PROMPT),
-    ("orchestration.synthesis_prompt", SYNTHESIS_PROMPT),
-    ("orchestration.evaluation_preamble", EVALUATION_PREAMBLE),
-    ("orchestration.evaluation_prompt", EVALUATION_PROMPT),
-    ("orchestration.reflection_prompt", REFLECTION_PROMPT),
-    ("orchestration.phase_continuation_prompt", PHASE_CONTINUATION_PROMPT),
-    ("orchestration.session_history_template", SESSION_HISTORY_TEMPLATE),
-    ("orchestration.todo_system_prompt", TODO_SYSTEM_PROMPT),
-    ("orchestration.todo_tool_prompt", TODO_TOOL_PROMPT),
-];
+/// Files to skip when scanning the prompts directory.
+const SKIP_FILES: &[&str] = &["mod.rs", "templates.md"];
+
+/// Discovers prompt templates from a local Aura repository checkout.
+///
+/// Scans `{aura_repo_root}/crates/aura/src/prompts/` for `.md` files,
+/// reads their content, and extracts template variables.
+///
+/// # Arguments
+/// * `aura_repo_root` — Path to the root of an Aura git checkout.
+///
+/// # Returns
+/// A vector of discovered prompts. Returns an error if the prompts directory
+/// does not exist or cannot be read.
+pub fn discover_from_aura_repo(aura_repo_root: &Path) -> crate::Result<Vec<DiscoveredPrompt>> {
+    let prompts_dir = aura_repo_root.join("crates/aura/src/prompts");
+    discover_from_dir(&prompts_dir)
+}
+
+/// Discovers prompt templates from a directory of `.md` files.
+///
+/// This is the lower-level function — use `discover_from_aura_repo` if you
+/// have the repo root, or call this directly with a custom directory.
+pub fn discover_from_dir(dir: &Path) -> crate::Result<Vec<DiscoveredPrompt>> {
+    if !dir.is_dir() {
+        return Err(crate::Error::Config(format!(
+            "prompts directory not found: {}",
+            dir.display()
+        )));
+    }
+
+    let mut prompts = Vec::new();
+
+    let entries = std::fs::read_dir(dir).map_err(|e| {
+        crate::Error::Config(format!("failed to read prompts directory {}: {e}", dir.display()))
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| {
+            crate::Error::Config(format!("failed to read directory entry: {e}"))
+        })?;
+
+        let path = entry.path();
+        let file_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
+
+        // Skip non-.md files and known non-prompt files
+        if !file_name.ends_with(".md") || SKIP_FILES.contains(&file_name.as_str()) {
+            continue;
+        }
+
+        let stem = file_name.strip_suffix(".md").unwrap_or(&file_name);
+        let content = std::fs::read_to_string(&path).map_err(|e| {
+            crate::Error::Config(format!("failed to read {}: {e}", path.display()))
+        })?;
+
+        let template_vars = extract_template_vars(&content);
+
+        prompts.push(DiscoveredPrompt {
+            name: stem.to_string(),
+            content,
+            template_vars,
+            source_path: path,
+        });
+    }
+
+    // Sort by name for deterministic ordering
+    prompts.sort_by(|a, b| a.name.cmp(&b.name));
+
+    tracing::info!(
+        "Discovered {} prompt templates from {}",
+        prompts.len(),
+        dir.display()
+    );
+
+    Ok(prompts)
+}
+
+/// Converts discovered prompts into a BTreeMap suitable for `OrchestrationPrompts`.
+pub fn discovered_to_map(prompts: &[DiscoveredPrompt]) -> BTreeMap<String, String> {
+    prompts.iter().map(|p| (p.name.clone(), p.content.clone())).collect()
+}
+
+/// Merges prompt maps with `overrides` taking precedence over `base`.
+pub fn merge_prompt_maps(
+    base: &BTreeMap<String, String>,
+    overrides: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut merged = base.clone();
+    for (key, value) in overrides {
+        merged.insert(key.clone(), value.clone());
+    }
+    merged
+}
+
+/// Extracts all template variables (`%%VAR%%` and `{{var}}`) from prompt content.
+pub fn extract_template_vars(content: &str) -> Vec<String> {
+    let mut vars = Vec::new();
+    let bytes = content.as_bytes();
+
+    // Extract %%VAR%% placeholders
+    let mut i = 0;
+    while i < bytes.len().saturating_sub(3) {
+        if bytes[i] == b'%' && bytes[i + 1] == b'%' {
+            if let Some(end) = content[i + 2..].find("%%") {
+                let var = &content[i..i + 2 + end + 2];
+                if !vars.contains(&var.to_string()) {
+                    vars.push(var.to_string());
+                }
+                i += 2 + end + 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    // Extract {{var}} placeholders
+    let mut i = 0;
+    while i < bytes.len().saturating_sub(3) {
+        if bytes[i] == b'{' && bytes[i + 1] == b'{' {
+            if let Some(end) = content[i + 2..].find("}}") {
+                let var = &content[i..i + 2 + end + 2];
+                if !vars.contains(&var.to_string()) {
+                    vars.push(var.to_string());
+                }
+                i += 2 + end + 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    vars
+}
+
+/// Derives a human-readable description from a prompt name and content.
+pub fn describe_prompt(name: &str, content: &str) -> String {
+    // Try to extract the first markdown heading
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(heading) = trimmed.strip_prefix("# ") {
+            return heading.to_string();
+        }
+    }
+    // Fall back to prettifying the name
+    name.replace('_', " ")
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_all_prompts_are_non_empty() {
-        for (name, content) in ALL_ORCHESTRATION_PROMPTS {
+    fn test_embedded_defaults_are_non_empty() {
+        let defaults = embedded_defaults();
+        for (name, content) in &defaults {
             assert!(!content.is_empty(), "prompt {name} should not be empty");
         }
     }
 
     #[test]
-    fn test_all_prompts_count() {
-        assert_eq!(ALL_ORCHESTRATION_PROMPTS.len(), 11);
+    fn test_embedded_defaults_count() {
+        let defaults = embedded_defaults();
+        assert_eq!(defaults.len(), 11);
     }
 
     #[test]
-    fn test_template_variables_preserved() {
-        // Verify key template variables are present in the prompts that use them
+    fn test_template_variables_preserved_in_embedded() {
         assert!(ORCHESTRATOR_PREAMBLE.contains("{{tools_section}}"));
         assert!(ORCHESTRATOR_PREAMBLE.contains("{{orchestration_system_prompt}}"));
         assert!(WORKER_PREAMBLE.contains("{{worker_system_prompt}}"));
@@ -348,5 +240,82 @@ mod tests {
         assert!(REFLECTION_PROMPT.contains("%%GOAL%%"));
         assert!(PHASE_CONTINUATION_PROMPT.contains("%%GOAL%%"));
         assert!(SESSION_HISTORY_TEMPLATE.contains("%%TURN_ENTRIES%%"));
+    }
+
+    #[test]
+    fn test_extract_template_vars_percent() {
+        let content = "Goal: %%GOAL%%\nQuery: %%QUERY%%";
+        let vars = extract_template_vars(content);
+        assert_eq!(vars, vec!["%%GOAL%%", "%%QUERY%%"]);
+    }
+
+    #[test]
+    fn test_extract_template_vars_mustache() {
+        let content = "Tools: {{tools_section}}\nPrompt: {{system_prompt}}";
+        let vars = extract_template_vars(content);
+        assert_eq!(vars, vec!["{{tools_section}}", "{{system_prompt}}"]);
+    }
+
+    #[test]
+    fn test_extract_template_vars_mixed() {
+        let content = "%%GOAL%%\n{{tools}}\n%%QUERY%%";
+        let vars = extract_template_vars(content);
+        assert_eq!(vars, vec!["%%GOAL%%", "%%QUERY%%", "{{tools}}"]);
+    }
+
+    #[test]
+    fn test_extract_template_vars_no_duplicates() {
+        let content = "%%GOAL%% and again %%GOAL%%";
+        let vars = extract_template_vars(content);
+        assert_eq!(vars, vec!["%%GOAL%%"]);
+    }
+
+    #[test]
+    fn test_merge_prompt_maps() {
+        let mut base = BTreeMap::new();
+        base.insert("a".into(), "original_a".into());
+        base.insert("b".into(), "original_b".into());
+
+        let mut overrides = BTreeMap::new();
+        overrides.insert("b".into(), "overridden_b".into());
+        overrides.insert("c".into(), "new_c".into());
+
+        let merged = merge_prompt_maps(&base, &overrides);
+        assert_eq!(merged["a"], "original_a");
+        assert_eq!(merged["b"], "overridden_b");
+        assert_eq!(merged["c"], "new_c");
+    }
+
+    #[test]
+    fn test_describe_prompt_with_heading() {
+        let content = "# Orchestration Coordinator\n\nYou are a coordinator...";
+        assert_eq!(describe_prompt("orchestrator_preamble", content), "Orchestration Coordinator");
+    }
+
+    #[test]
+    fn test_describe_prompt_without_heading() {
+        let content = "You are an evaluation agent.";
+        assert_eq!(describe_prompt("evaluation_preamble", content), "evaluation preamble");
+    }
+
+    #[test]
+    fn test_discover_from_dir_nonexistent() {
+        let result = discover_from_dir(Path::new("/nonexistent/path"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_discover_from_dir_reads_embedded_files() {
+        // Discover from our own embedded .md files (they exist at src/prompts/)
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/prompts");
+        if dir.is_dir() {
+            let prompts = discover_from_dir(&dir).unwrap();
+            assert!(!prompts.is_empty());
+            // Each discovered prompt should have content and extracted vars
+            for p in &prompts {
+                assert!(!p.content.is_empty(), "{} should have content", p.name);
+                assert!(!p.name.is_empty());
+            }
+        }
     }
 }

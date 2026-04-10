@@ -78,9 +78,9 @@ impl OptimizableField {
 
         if let Some(ref orch) = config.orchestration {
             if orch.enabled {
-                // Add all orchestration prompt fields
+                // Add all orchestration prompt fields (dynamic — picks up new prompts)
                 for (path, _) in orch.prompts.fields() {
-                    fields.push(OptimizableField::OrchestrationPrompt(path.to_string()));
+                    fields.push(OptimizableField::OrchestrationPrompt(path));
                 }
                 // Add worker preambles
                 for name in orch.workers.keys() {
@@ -93,34 +93,32 @@ impl OptimizableField {
     }
 
     /// Returns a human-readable description of what this prompt does.
+    ///
+    /// For dynamically discovered prompts, derives the description from
+    /// the prompt content (first heading) or the field name.
+    pub fn description_for(&self, config: &AuraConfig) -> String {
+        match self {
+            Self::AgentSystemPrompt => "The agent's main system prompt".to_string(),
+            Self::OrchestrationPrompt(path) => {
+                // Try to derive description from the prompt content
+                if let Some(content) = self.get_value(config) {
+                    let name = path.strip_prefix("orchestration.prompts.").unwrap_or(path);
+                    crate::prompts::describe_prompt(name, content)
+                } else {
+                    path.clone()
+                }
+            }
+            Self::WorkerPreamble(name) => {
+                format!("Worker preamble for '{name}'")
+            }
+        }
+    }
+
+    /// Returns a static description for known prompt fields, or a generic one.
     pub fn description(&self) -> &str {
         match self {
             Self::AgentSystemPrompt => "The agent's main system prompt",
-            Self::OrchestrationPrompt(path) => match path.as_str() {
-                "orchestration.prompts.orchestrator_preamble" =>
-                    "Coordinator agent preamble for routing and planning",
-                "orchestration.prompts.worker_preamble" =>
-                    "Worker agent preamble defining scope and rules",
-                "orchestration.prompts.worker_task_prompt" =>
-                    "Template injected per-task into worker agents",
-                "orchestration.prompts.synthesis_prompt" =>
-                    "Prompt for combining multi-task results into a response",
-                "orchestration.prompts.evaluation_preamble" =>
-                    "Evaluation agent system prompt",
-                "orchestration.prompts.evaluation_prompt" =>
-                    "Quality assessment prompt with scoring criteria",
-                "orchestration.prompts.reflection_prompt" =>
-                    "Replan cycle prompt for iterative improvement",
-                "orchestration.prompts.phase_continuation_prompt" =>
-                    "Decision prompt for continue vs replan between phases",
-                "orchestration.prompts.session_history_template" =>
-                    "Multi-turn session context injection template",
-                "orchestration.prompts.todo_system_prompt" =>
-                    "System-level task management guidance",
-                "orchestration.prompts.todo_tool_prompt" =>
-                    "Todo tool usage instructions for agents",
-                _ => "Orchestration prompt template",
-            },
+            Self::OrchestrationPrompt(_) => "Orchestration prompt template",
             Self::WorkerPreamble(_) => "A specialized worker agent preamble",
         }
     }

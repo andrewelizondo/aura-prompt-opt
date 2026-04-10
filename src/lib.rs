@@ -16,6 +16,7 @@ pub use optimizer::{
     BootstrapFewShot, InstructionOptimizer, MiproOptimizer, OptimizableField,
     OptimizationLogEntry, OptimizationResult,
 };
+pub use prompts::{discover_from_aura_repo, discover_from_dir, DiscoveredPrompt};
 
 use std::path::Path;
 

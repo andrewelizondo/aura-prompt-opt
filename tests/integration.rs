@@ -138,10 +138,11 @@ fn test_parse_orchestration_config() {
     assert_eq!(orch.workers.len(), 2);
     assert!(orch.workers.contains_key("database"));
     assert!(orch.workers.contains_key("monitoring"));
-    // Prompts should have defaults
-    assert!(!orch.prompts.orchestrator_preamble.is_empty());
-    assert!(orch.prompts.orchestrator_preamble.contains("Orchestration Coordinator"));
-    assert!(orch.prompts.synthesis_prompt.contains("%%GOAL%%"));
+    // Prompts should have defaults (dynamically keyed)
+    let preamble = orch.prompts.get_field("orchestrator_preamble").unwrap();
+    assert!(!preamble.is_empty());
+    assert!(preamble.contains("Orchestration Coordinator"));
+    assert!(orch.prompts.get_field("synthesis_prompt").unwrap().contains("%%GOAL%%"));
 }
 
 #[test]
@@ -153,12 +154,12 @@ fn test_orchestration_prompts_round_trip() {
     let orig = &config.orchestration.as_ref().unwrap().prompts;
     let round = &reparsed.orchestration.as_ref().unwrap().prompts;
 
-    assert_eq!(orig.orchestrator_preamble, round.orchestrator_preamble);
-    assert_eq!(orig.worker_preamble, round.worker_preamble);
-    assert_eq!(orig.synthesis_prompt, round.synthesis_prompt);
-    assert_eq!(orig.evaluation_prompt, round.evaluation_prompt);
-    assert_eq!(orig.reflection_prompt, round.reflection_prompt);
-    assert_eq!(orig.phase_continuation_prompt, round.phase_continuation_prompt);
+    // All prompts should survive serialization round-trip
+    for (name, orig_content) in &orig.prompts {
+        let round_content = round.prompts.get(name)
+            .unwrap_or_else(|| panic!("prompt '{name}' missing after round-trip"));
+        assert_eq!(orig_content, round_content, "prompt '{name}' changed during round-trip");
+    }
 }
 
 #[test]
@@ -266,19 +267,19 @@ fn test_orchestration_prompts_contain_expected_template_vars() {
     let config = parse_toml(ORCHESTRATION_TOML).unwrap();
     let prompts = &config.orchestration.as_ref().unwrap().prompts;
 
-    // Verify key template variables are present in the defaults
-    assert!(prompts.orchestrator_preamble.contains("{{tools_section}}"));
-    assert!(prompts.orchestrator_preamble.contains("{{orchestration_system_prompt}}"));
-    assert!(prompts.worker_preamble.contains("{{worker_system_prompt}}"));
-    assert!(prompts.worker_task_prompt.contains("%%YOUR_TASK%%"));
-    assert!(prompts.synthesis_prompt.contains("%%GOAL%%"));
-    assert!(prompts.synthesis_prompt.contains("%%QUERY%%"));
-    assert!(prompts.synthesis_prompt.contains("%%RESULTS%%"));
-    assert!(prompts.evaluation_prompt.contains("%%QUERY%%"));
-    assert!(prompts.evaluation_prompt.contains("%%RESULT%%"));
-    assert!(prompts.reflection_prompt.contains("%%ITERATION%%"));
-    assert!(prompts.phase_continuation_prompt.contains("%%GOAL%%"));
-    assert!(prompts.session_history_template.contains("%%TURN_ENTRIES%%"));
+    // Verify key template variables are present in the defaults (via dynamic map)
+    assert!(prompts.get_field("orchestrator_preamble").unwrap().contains("{{tools_section}}"));
+    assert!(prompts.get_field("orchestrator_preamble").unwrap().contains("{{orchestration_system_prompt}}"));
+    assert!(prompts.get_field("worker_preamble").unwrap().contains("{{worker_system_prompt}}"));
+    assert!(prompts.get_field("worker_task_prompt").unwrap().contains("%%YOUR_TASK%%"));
+    assert!(prompts.get_field("synthesis_prompt").unwrap().contains("%%GOAL%%"));
+    assert!(prompts.get_field("synthesis_prompt").unwrap().contains("%%QUERY%%"));
+    assert!(prompts.get_field("synthesis_prompt").unwrap().contains("%%RESULTS%%"));
+    assert!(prompts.get_field("evaluation_prompt").unwrap().contains("%%QUERY%%"));
+    assert!(prompts.get_field("evaluation_prompt").unwrap().contains("%%RESULT%%"));
+    assert!(prompts.get_field("reflection_prompt").unwrap().contains("%%ITERATION%%"));
+    assert!(prompts.get_field("phase_continuation_prompt").unwrap().contains("%%GOAL%%"));
+    assert!(prompts.get_field("session_history_template").unwrap().contains("%%TURN_ENTRIES%%"));
 }
 
 #[tokio::test]
@@ -306,4 +307,81 @@ async fn test_bootstrap_with_orchestration_field() {
         "orchestration.prompts.orchestrator_preamble"
     );
     assert!(result.optimization_log[0].after.contains("## Examples"));
+}
+
+// ── Dynamic discovery integration tests ────────────────────────────────
+
+#[test]
+fn test_discover_prompts_from_embedded_md_dir() {
+    use std::path::Path;
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/prompts");
+    let discovered = aura_prompt_opt::discover_from_dir(&dir).unwrap();
+
+    // Should find all 11 .md files (excluding mod.rs and templates.md if present)
+    assert_eq!(discovered.len(), 11);
+
+    // Each should have content and a valid name
+    for p in &discovered {
+        assert!(!p.name.is_empty());
+        assert!(!p.content.is_empty(), "{} has empty content", p.name);
+        assert!(p.source_path.exists());
+    }
+
+    // Specific prompts should have their expected template vars
+    let synth = discovered.iter().find(|p| p.name == "synthesis_prompt").unwrap();
+    assert!(synth.template_vars.contains(&"%%GOAL%%".to_string()));
+    assert!(synth.template_vars.contains(&"%%QUERY%%".to_string()));
+    assert!(synth.template_vars.contains(&"%%RESULTS%%".to_string()));
+
+    let orch = discovered.iter().find(|p| p.name == "orchestrator_preamble").unwrap();
+    assert!(orch.template_vars.contains(&"{{tools_section}}".to_string()));
+}
+
+#[test]
+fn test_orchestration_prompts_from_prompt_dir() {
+    use aura_prompt_opt::config::schema::OrchestrationPrompts;
+    use std::path::Path;
+
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/prompts");
+    let prompts = OrchestrationPrompts::from_prompt_dir(&dir).unwrap();
+
+    // Should have at least the 11 embedded prompts
+    assert!(prompts.len() >= 11);
+
+    // All embedded defaults should be present
+    let defaults = aura_prompt_opt::prompts::embedded_defaults();
+    for name in defaults.keys() {
+        assert!(
+            prompts.get_field(name).is_some(),
+            "prompt '{name}' missing from discovered set"
+        );
+    }
+}
+
+#[test]
+fn test_dynamic_prompts_auto_discovered_in_all_fields() {
+    // Simulate what happens when Aura adds a new prompt file:
+    // The new prompt appears in OrchestrationPrompts and gets picked up by all_fields()
+    let mut config = parse_toml(ORCHESTRATION_TOML).unwrap();
+
+    // Inject a "new" prompt that doesn't exist in the embedded defaults
+    if let Some(ref mut orch) = config.orchestration {
+        orch.prompts.set_field("brand_new_prompt", "A future prompt with %%SOME_VAR%%".into());
+    }
+
+    let fields = OptimizableField::all_fields(&config);
+
+    // Should include the new prompt
+    assert!(fields.iter().any(|f| {
+        matches!(f, OptimizableField::OrchestrationPrompt(p) if p == "orchestration.prompts.brand_new_prompt")
+    }));
+
+    // And the optimizer should be able to read/write it
+    let new_field = OptimizableField::OrchestrationPrompt(
+        "orchestration.prompts.brand_new_prompt".into(),
+    );
+    assert_eq!(
+        new_field.get_value(&config).unwrap(),
+        "A future prompt with %%SOME_VAR%%"
+    );
 }

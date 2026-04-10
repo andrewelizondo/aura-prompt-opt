@@ -101,8 +101,10 @@ impl InstructionOptimizer {
                 None => continue,
             };
 
+            let field_desc = field.description_for(&best_config);
             let prompt = build_optimization_prompt(
                 field,
+                &field_desc,
                 &current_value,
                 &failure_summary,
                 self.num_candidates,
@@ -194,11 +196,11 @@ impl InstructionOptimizer {
 /// Builds the meta-prompt for the LLM to generate candidate improvements.
 fn build_optimization_prompt(
     field: &OptimizableField,
+    field_desc: &str,
     current_value: &str,
     failure_summary: &str,
     num_candidates: usize,
 ) -> String {
-    let field_desc = field.description();
     let field_path = field.field_path();
 
     let template_instruction = if field.is_template() {
@@ -322,7 +324,7 @@ mod tests {
         let field = OptimizableField::OrchestrationPrompt(
             "orchestration.prompts.synthesis_prompt".into(),
         );
-        let prompt = build_optimization_prompt(&field, "test %%GOAL%%", "failures", 3);
+        let prompt = build_optimization_prompt(&field, "Synthesis prompt", "test %%GOAL%%", "failures", 3);
         assert!(prompt.contains("CRITICAL: This is a template prompt"));
         assert!(prompt.contains("%%VARIABLE_NAME%%"));
     }
@@ -330,7 +332,7 @@ mod tests {
     #[test]
     fn test_build_optimization_prompt_no_template_warning_for_agent() {
         let field = OptimizableField::AgentSystemPrompt;
-        let prompt = build_optimization_prompt(&field, "test prompt", "failures", 3);
+        let prompt = build_optimization_prompt(&field, "Main system prompt", "test prompt", "failures", 3);
         assert!(!prompt.contains("CRITICAL: This is a template prompt"));
     }
 }

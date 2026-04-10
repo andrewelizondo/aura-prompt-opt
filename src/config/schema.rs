@@ -89,6 +89,7 @@ pub struct ToolsConfig {
 pub struct AgentConfig {
     pub name: String,
     pub system_prompt: String,
+    #[serde(default)] pub alias: Option<String>,
     #[serde(default)] pub temperature: Option<f64>,
     #[serde(default)] pub max_tokens: Option<u64>,
     #[serde(default = "default_turn_depth")] pub turn_depth: Option<usize>,
@@ -102,6 +103,7 @@ impl Default for AgentConfig {
         Self {
             name: "Assistant".to_string(),
             system_prompt: "You are a helpful assistant.".to_string(),
+            alias: None,
             temperature: Some(0.7),
             max_tokens: None,
             turn_depth: default_turn_depth(),
@@ -115,8 +117,40 @@ pub struct OrchestrationConfig {
     #[serde(default)] pub enabled: bool,
     #[serde(default = "default_max_planning_cycles")] pub max_planning_cycles: usize,
     #[serde(default = "default_quality_threshold")] pub quality_threshold: f32,
+    /// Workers keyed by name. Accepts both `[orchestration.workers.X]` (plural)
+    /// and `[orchestration.worker.X]` (singular, as used by Aura).
     #[serde(default)] pub workers: HashMap<String, WorkerConfig>,
+    /// Alias: Aura uses `[orchestration.worker.X]` (singular).
+    #[serde(default, alias = "worker")] pub worker: Option<HashMap<String, WorkerConfig>>,
     #[serde(default)] pub prompts: OrchestrationPrompts,
+    #[serde(default)] pub allow_direct_answers: Option<bool>,
+    #[serde(default)] pub allow_clarification: Option<bool>,
+    #[serde(default)] pub tools_in_planning: Option<String>,
+    #[serde(default)] pub timeouts: Option<TimeoutsConfig>,
+    #[serde(default)] pub artifacts: Option<ArtifactsConfig>,
+}
+
+impl OrchestrationConfig {
+    /// Returns all workers, merging `workers` (plural) and `worker` (singular) maps.
+    pub fn all_workers(&self) -> HashMap<String, WorkerConfig> {
+        let mut merged = self.workers.clone();
+        if let Some(ref singular) = self.worker {
+            for (name, cfg) in singular {
+                merged.entry(name.clone()).or_insert_with(|| cfg.clone());
+            }
+        }
+        merged
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct TimeoutsConfig {
+    #[serde(default)] pub per_call_timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ArtifactsConfig {
+    #[serde(default)] pub memory_dir: Option<String>,
 }
 
 /// Overridable prompt templates for orchestration mode.
@@ -228,7 +262,8 @@ fn default_quality_threshold() -> f32 { 0.8 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkerConfig {
     pub description: String,
-    pub preamble: String,
+    #[serde(default)] pub preamble: String,
+    #[serde(default)] pub turn_depth: Option<usize>,
     #[serde(default)] pub mcp_filter: Vec<String>,
 }
 

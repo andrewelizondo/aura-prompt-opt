@@ -1,5 +1,6 @@
 use crate::config::schema::AuraConfig;
 use crate::error::Result;
+use crate::eval::agent_runner::{AgentRunner, StubAgentRunner};
 use crate::eval::metrics::{Metric, MetricScore};
 use crate::eval::scenario::EvalScenario;
 
@@ -15,15 +16,29 @@ pub struct EvalResult {
 pub struct EvalRunner {
     pub metrics: Vec<Box<dyn Metric>>,
     pub pass_threshold: f64,
+    pub agent: Box<dyn AgentRunner>,
 }
 
 impl EvalRunner {
+    /// Creates a new runner with a stub agent (echoes canned responses).
+    ///
+    /// Use `with_agent()` to inject a real runner for actual optimization.
     pub fn new(metrics: Vec<Box<dyn Metric>>) -> Self {
-        Self { metrics, pass_threshold: 0.7 }
+        Self {
+            metrics,
+            pass_threshold: 0.7,
+            agent: Box::new(StubAgentRunner::new()),
+        }
     }
 
     pub fn with_pass_threshold(mut self, threshold: f64) -> Self {
         self.pass_threshold = threshold;
+        self
+    }
+
+    /// Injects a concrete `AgentRunner` implementation.
+    pub fn with_agent(mut self, agent: Box<dyn AgentRunner>) -> Self {
+        self.agent = agent;
         self
     }
 
@@ -32,7 +47,7 @@ impl EvalRunner {
         config: &AuraConfig,
         scenario: &EvalScenario,
     ) -> Result<EvalResult> {
-        let output = self.run_agent(config, &scenario.input).await?;
+        let output = self.agent.run(config, &scenario.input).await?;
         self.score_output(scenario, &output).await
     }
 
@@ -61,16 +76,15 @@ impl EvalRunner {
         })
     }
 
-    /// Stub: simulates running the agent. Returns a synthetic response based on the agent name.
-    /// Replace with a real Aura agent call when integrating with the web server.
+    /// Convenience wrapper that runs the agent directly.
+    ///
+    /// Retained for backward compatibility. Prefer injecting the runner
+    /// via `with_agent()` and calling `run_scenario()`.
     pub async fn run_agent(
         &self,
         config: &AuraConfig,
         input: &str,
     ) -> Result<String> {
-        Ok(format!(
-            "[STUB] Agent '{}' received: {}",
-            config.agent.name, input
-        ))
+        self.agent.run(config, input).await
     }
 }

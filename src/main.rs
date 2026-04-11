@@ -1,6 +1,7 @@
 use aura_prompt_opt::{
     AuraOptimizer, EvalDataset, EvalScenario, FuzzyMatch, LlmClient, Metric,
     config::schema::OrchestrationPrompts,
+    llm::client::{DEFAULT_BASE_URL, DEFAULT_MODEL},
 };
 use clap::Parser;
 use std::path::{Path, PathBuf};
@@ -26,7 +27,7 @@ struct Cli {
     aura_repo: Option<PathBuf>,
 
     /// LLM API base URL (OpenAI-compatible).
-    #[arg(long, env = "OPTIMIZER_BASE_URL", default_value = "https://openrouter.ai/api/v1")]
+    #[arg(long, env = "OPTIMIZER_BASE_URL", default_value = DEFAULT_BASE_URL)]
     base_url: String,
 
     /// LLM API key.
@@ -34,7 +35,7 @@ struct Cli {
     api_key: Option<String>,
 
     /// LLM model name.
-    #[arg(long, env = "OPTIMIZER_MODEL", default_value = "openai/gpt-4o")]
+    #[arg(long, env = "OPTIMIZER_MODEL", default_value = DEFAULT_MODEL)]
     model: String,
 
     /// Pass threshold for evaluation (0.0 to 1.0).
@@ -68,6 +69,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Resolve API key
     let api_key = cli.api_key.clone()
+        .or_else(|| std::env::var("OPENROUTER_API_KEY").ok())
         .or_else(|| std::env::var("OPENAI_API_KEY").ok())
         .unwrap_or_default();
 

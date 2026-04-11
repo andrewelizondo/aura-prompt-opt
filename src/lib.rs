@@ -11,7 +11,10 @@ pub use error::{Error, Result};
 
 pub use compiler::{compile_optimized, compile_verbose, CompilationOutput};
 pub use config::{parse_toml, serialize_toml, AuraConfig};
-pub use eval::{EvalDataset, EvalResult, EvalRunner, EvalScenario, ExactMatch, FuzzyMatch, LlmJudge, Metric};
+pub use eval::{
+    AgentRunner, AuraHttpRunner, EvalDataset, EvalResult, EvalRunner, EvalScenario,
+    ExactMatch, FuzzyMatch, LlmJudge, Metric, OpenAiCompatRunner, StubAgentRunner,
+};
 pub use llm::LlmClient;
 pub use optimizer::{
     BootstrapFewShot, InstructionOptimizer, MiproOptimizer, OptimizableField,

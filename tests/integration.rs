@@ -278,8 +278,8 @@ fn test_orchestration_prompts_contain_expected_template_vars() {
     assert!(prompts.get_field("evaluation_prompt").unwrap().contains("%%QUERY%%"));
     assert!(prompts.get_field("evaluation_prompt").unwrap().contains("%%RESULT%%"));
     assert!(prompts.get_field("reflection_prompt").unwrap().contains("%%ITERATION%%"));
-    assert!(prompts.get_field("phase_continuation_prompt").unwrap().contains("%%GOAL%%"));
-    assert!(prompts.get_field("session_history_template").unwrap().contains("%%TURN_ENTRIES%%"));
+    assert!(prompts.get_field("phase_continuation").unwrap().contains("%%GOAL%%"));
+    assert!(prompts.get_field("session_history").unwrap().contains("%%TURN_ENTRIES%%"));
 }
 
 #[tokio::test]

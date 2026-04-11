@@ -19,12 +19,15 @@ pub const SYNTHESIS_PROMPT: &str = include_str!("prompts/synthesis_prompt.md");
 pub const EVALUATION_PREAMBLE: &str = include_str!("prompts/evaluation_preamble.md");
 pub const EVALUATION_PROMPT: &str = include_str!("prompts/evaluation_prompt.md");
 pub const REFLECTION_PROMPT: &str = include_str!("prompts/reflection_prompt.md");
-pub const PHASE_CONTINUATION_PROMPT: &str = include_str!("prompts/phase_continuation_prompt.md");
-pub const SESSION_HISTORY_TEMPLATE: &str = include_str!("prompts/session_history_template.md");
-pub const TODO_SYSTEM_PROMPT: &str = include_str!("prompts/todo_system_prompt.md");
-pub const TODO_TOOL_PROMPT: &str = include_str!("prompts/todo_tool_prompt.md");
+pub const PHASE_CONTINUATION: &str = include_str!("prompts/phase_continuation.md");
+pub const SESSION_HISTORY: &str = include_str!("prompts/session_history.md");
+pub const TODO_SYSTEM: &str = include_str!("prompts/todo_system.md");
+pub const TODO_TOOL: &str = include_str!("prompts/todo_tool.md");
 
 /// Returns the embedded prompt defaults as a map of name → content.
+///
+/// Keys match Aura's actual `.md` filenames (stems) at
+/// `crates/aura/src/prompts/` on `feature/orchestration-mode`.
 pub fn embedded_defaults() -> BTreeMap<String, String> {
     BTreeMap::from([
         ("orchestrator_preamble".into(), ORCHESTRATOR_PREAMBLE.into()),
@@ -34,10 +37,10 @@ pub fn embedded_defaults() -> BTreeMap<String, String> {
         ("evaluation_preamble".into(), EVALUATION_PREAMBLE.into()),
         ("evaluation_prompt".into(), EVALUATION_PROMPT.into()),
         ("reflection_prompt".into(), REFLECTION_PROMPT.into()),
-        ("phase_continuation_prompt".into(), PHASE_CONTINUATION_PROMPT.into()),
-        ("session_history_template".into(), SESSION_HISTORY_TEMPLATE.into()),
-        ("todo_system_prompt".into(), TODO_SYSTEM_PROMPT.into()),
-        ("todo_tool_prompt".into(), TODO_TOOL_PROMPT.into()),
+        ("phase_continuation".into(), PHASE_CONTINUATION.into()),
+        ("session_history".into(), SESSION_HISTORY.into()),
+        ("todo_system".into(), TODO_SYSTEM.into()),
+        ("todo_tool".into(), TODO_TOOL.into()),
     ])
 }
 
@@ -238,8 +241,8 @@ mod tests {
         assert!(EVALUATION_PROMPT.contains("%%RESULT%%"));
         assert!(REFLECTION_PROMPT.contains("%%ITERATION%%"));
         assert!(REFLECTION_PROMPT.contains("%%GOAL%%"));
-        assert!(PHASE_CONTINUATION_PROMPT.contains("%%GOAL%%"));
-        assert!(SESSION_HISTORY_TEMPLATE.contains("%%TURN_ENTRIES%%"));
+        assert!(PHASE_CONTINUATION.contains("%%GOAL%%"));
+        assert!(SESSION_HISTORY.contains("%%TURN_ENTRIES%%"));
     }
 
     #[test]

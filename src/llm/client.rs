@@ -44,12 +44,26 @@ struct ChatCompletionRequest<'a> {
     max_tokens: Option<u32>,
 }
 
+/// Default base URL for the LLM API (OpenAI).
+///
+/// To use OpenRouter or another OpenAI-compatible provider, set the
+/// `OPTIMIZER_BASE_URL` environment variable (e.g. `https://openrouter.ai/api/v1`).
+pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
+
+/// Default model name used when none is specified.
+pub const DEFAULT_MODEL: &str = "gpt-4o";
+
 /// OpenAI-compatible chat completions client.
 ///
 /// Configure via environment variables:
-///   OPTIMIZER_API_KEY   (or OPENAI_API_KEY)
+///   OPTIMIZER_API_KEY   (or OPENAI_API_KEY, OPENROUTER_API_KEY)
 ///   OPTIMIZER_BASE_URL  (default: https://api.openai.com/v1)
 ///   OPTIMIZER_MODEL     (default: gpt-4o)
+///
+/// To use OpenRouter:
+///   OPTIMIZER_BASE_URL=https://openrouter.ai/api/v1
+///   OPTIMIZER_API_KEY=sk-or-v1-...
+///   OPTIMIZER_MODEL=openai/gpt-4o  (or any OpenRouter model slug)
 #[derive(Debug, Clone)]
 pub struct LlmClient {
     pub base_url: String,
@@ -70,12 +84,13 @@ impl LlmClient {
 
     pub fn from_env() -> Self {
         let base_url = std::env::var("OPTIMIZER_BASE_URL")
-            .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+            .unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
         let api_key = std::env::var("OPTIMIZER_API_KEY")
+            .or_else(|_| std::env::var("OPENROUTER_API_KEY"))
             .or_else(|_| std::env::var("OPENAI_API_KEY"))
             .unwrap_or_default();
         let model = std::env::var("OPTIMIZER_MODEL")
-            .unwrap_or_else(|_| "gpt-4o".to_string());
+            .unwrap_or_else(|_| DEFAULT_MODEL.to_string());
         Self::new(base_url, api_key, model)
     }
 
@@ -145,9 +160,11 @@ mod tests {
         std::env::remove_var("OPTIMIZER_BASE_URL");
         std::env::remove_var("OPTIMIZER_MODEL");
         std::env::remove_var("OPTIMIZER_API_KEY");
+        std::env::remove_var("OPENROUTER_API_KEY");
         std::env::remove_var("OPENAI_API_KEY");
 
         let client = LlmClient::from_env();
+        assert_eq!(client.base_url, DEFAULT_BASE_URL);
         assert_eq!(client.base_url, "https://api.openai.com/v1");
         assert_eq!(client.model, "gpt-4o");
     }

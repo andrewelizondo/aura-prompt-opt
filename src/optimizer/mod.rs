@@ -40,7 +40,10 @@ impl OptimizableField {
             }
             Self::WorkerPreamble(name) => {
                 config.orchestration.as_ref()
-                    .and_then(|o| o.workers.get(name))
+                    .and_then(|o| {
+                        o.workers.get(name)
+                            .or_else(|| o.worker.as_ref().and_then(|w| w.get(name)))
+                    })
                     .map(|w| w.preamble.as_str())
             }
         }
@@ -66,6 +69,12 @@ impl OptimizableField {
                         worker.preamble = value;
                         return true;
                     }
+                    if let Some(ref mut singular) = orch.worker {
+                        if let Some(worker) = singular.get_mut(name) {
+                            worker.preamble = value;
+                            return true;
+                        }
+                    }
                 }
                 false
             }
@@ -82,8 +91,8 @@ impl OptimizableField {
                 for (path, _) in orch.prompts.fields() {
                     fields.push(OptimizableField::OrchestrationPrompt(path));
                 }
-                // Add worker preambles
-                for name in orch.workers.keys() {
+                // Add worker preambles (from both `workers` and `worker` maps)
+                for name in orch.all_workers().keys() {
                     fields.push(OptimizableField::WorkerPreamble(name.clone()));
                 }
             }

@@ -5,6 +5,7 @@ pub mod eval;
 pub mod llm;
 pub mod optimizer;
 pub mod prompts;
+pub mod values_file;
 
 pub use error::{Error, Result};
 
